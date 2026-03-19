@@ -1,0 +1,69 @@
+<!-- public/login.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login | Campus Navigation System</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="page-bg">
+  <div class="logo-center">
+    <img src="college-logo.png" alt="College Logo" />
+  </div>
+
+  <div class="glass-card fade-in">
+    <h2>Login</h2>
+
+    <div class="input-group">
+      <label for="role">Role:</label>
+      <select id="role">
+        <option value="User">User</option>
+        <option value="Admin">Admin</option>
+      </select>
+    </div>
+
+    <div class="input-group">
+      <label for="email">Email:</label>
+      <input type="email" id="email" placeholder="Enter your email" />
+    </div>
+
+    <div class="input-group">
+      <label for="password">Password:</label>
+      <input type="password" id="password" placeholder="Enter password" />
+    </div>
+
+    <button id="loginBtn">Login</button>
+    <p id="loginMsg" style="text-align:center;margin-top:10px;"></p>
+
+    <div class="links">
+      <a href="signup.html">Create New Account</a> |
+      <a href="forgot.html">Forgot Password?</a>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    document.getElementById("loginBtn").addEventListener("click", async () => {
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const role = document.getElementById("role").value;
+      const msg = document.getElementById("loginMsg");
+      msg.style.color = "#555"; msg.textContent = "Signing in...";
+
+      try {
+        const user = await CN_API.login(email, password, role);
+        Auth.store(user); // save token+profile
+        msg.style.color = "green";
+        msg.textContent = `Welcome ${user.name || "User"}! Redirecting…`;
+        setTimeout(() => (location.href = "/map.html"), 700);
+      } catch (e) {
+        msg.style.color = "#c00";
+        msg.textContent = e?.error || "Invalid credentials";
+        console.error("login error:", e);
+      }
+    });
+  </script>
+</body>
+</html>

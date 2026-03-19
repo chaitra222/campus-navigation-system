@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GAT Campus Map — Routing</title>
+
+  <!-- Auth -->
+  <script src="/js/auth.js"></script>
+  <script>requireAuth();</script>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- (Optional) Leaflet Routing Machine CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+
+  <style>
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; background:#f9fafb; }
+    header { background:#0f172a; color:white; padding:10px 12px; display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:1rem; margin:0; }
+    .controls { display:flex; gap:8px; padding:10px; align-items:center; flex-wrap:wrap; background:white; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+    .controls select, .controls button { padding:8px 10px; font-size:14px; border-radius:6px; border:1px solid #d1d5db; background:white; cursor:pointer; }
+    .controls .hint { color:#374151; font-size:13px; margin-left:6px; }
+    #map { width:100%; height: calc(100vh - 106px); }
+    @media (max-width:768px) {
+      #map { height: calc(100vh - 150px); }
+      .controls { padding:8px; gap:6px; }
+      .controls select, .controls button { font-size:13px; padding:7px; }
+      header h1 { font-size:0.95rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Global Academy of Technology — Campus Map & Routing</h1>
+  </header>
+
+  <div class="controls" id="control-bar">
+    <label>
+      Start:
+      <select id="startSelect"></select>
+    </label>
+
+    <label>
+      Destination:
+      <select id="endSelect"></select>
+    </label>
+
+    <button id="showRouteBtn" style="background:#2563eb;color:white;border:none;">Show Route</button>
+
+    <label style="display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="directEdgeMode" />
+      Use direct saved path
+    </label>
+
+    <label style="margin-left:8px;">
+      Indoor / Classroom:
+      <select id="indoorSelect">
+        <option value="">— choose example —</option>
+        <option value="roomToRoom">Room 101 → Room 305 (example)</option>
+      </select>
+    </label>
+
+    <button id="clearBtn" style="margin-left:auto; background:#ef4444; color:white; border:none;">Clear</button>
+    <button id="get-location" style="background:#10b981; color:white; border:none;">Get Current Location</button>
+
+    <button id="voiceToggle" style="background:#6b7280;color:white;border:none;">Voice: Off</button>
+    <button id="navToggle" style="background:#0ea5e9;color:white;border:none;">Start Navigation</button>
+
+    <span class="hint">Tip: choose Destination, then use GPS or Start.</span>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- (Optional) LRM JS -->
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+  <script>
+    function ensureDirPanel(){
+      if (document.getElementById('dirPanel')) return;
+      const panel = document.createElement('div');
+      panel.id = 'dirPanel';
+      panel.style.cssText = 'background:white;box-shadow:0 1px 6px rgba(0,0,0,0.06);padding:10px;border-top:1px solid #e5e7eb;';
+      panel.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span class="badge" id="distanceBadge" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:600;">—</span>
+          <span class="badge" id="timeBadge"     style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:600;">—</span>
+          <span class="badge" id="stepsBadge"    style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:600;">—</span>
+        </div>
+        <ol id="stepsList" style="margin:0;padding:0 0 0 18px;max-height:160px;overflow:auto;"></ol>
+      `;
+      const ctrl = document.getElementById('control-bar');
+      ctrl.insertAdjacentElement('afterend', panel);
+    }
+
+    // ---------- Map ----------
+    const map = L.map('map').setView([12.92717, 77.52623], 17);
+
+    // Route state
+    let routeControl = null;
+    let walkLayer = null;
+    let endpointLayers = [];
+
+    // GPS state
+    let currentLocation = null;      // [lat, lng]
+    let currentLocMarker = null;
+    let currentAccCircle = null;
+
+    // Voice + Nav state
+    let ttsEnabled = false;
+    let navWatchId = null;
+    const NAV_PREANNOUNCE_M = 30;
+    const NAV_NOW_TURN_M   = 10;
+    let navState = { active:false, instructions:[], anchors:[], announced:[], idx:0 };
+
+    function clearRoute() {
+      if (routeControl) { try { map.removeControl(routeControl); } catch (e) {} routeControl = null; }
+      if (walkLayer) { map.removeLayer(walkLayer); walkLayer = null; }
+      endpointLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+      endpointLayers = [];
+      if (window._indoorPolyline) { try { map.removeLayer(window._indoorPolyline); } catch (e) {} window._indoorPolyline = null; }
+      const panel = document.getElementById('dirPanel');
+      if (panel) {
+        panel.querySelector('#distanceBadge').textContent = '—';
+        panel.querySelector('#timeBadge').textContent = '—';
+        panel.querySelector('#stepsBadge').textContent = '—';
+        panel.querySelector('#stepsList').innerHTML = '';
+      }
+      stopNavigation();
+    }
+    document.getElementById('clearBtn').addEventListener('click', clearRoute);
+
+    // Distance/bearing helpers
+    function toRad(d){ return d * Math.PI / 180; }
+    function toDeg(r){ return r * 180 / Math.PI; }
+    function haversine(a, b) {
+      const R=6371000, φ1=toRad(a[0]), φ2=toRad(b[0]), dφ=toRad(b[0]-a[0]), dλ=toRad(b[1]-a[1]);
+      const s = Math.sin(dφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(dλ/2)**2;
+      return 2*R*Math.asin(Math.sqrt(s));
+    }
+    function bearing(a, b) {
+      const φ1=toRad(a[0]), φ2=toRad(b[0]), λ1=toRad(a[1]), λ2=toRad(b[1]);
+      const y = Math.sin(λ2-λ1) * Math.cos(φ2);
+      const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1);
+      return (toDeg(Math.atan2(y,x)) + 360) % 360;
+    }
+    function turnFromDelta(delta){
+      const ad=Math.abs(delta);
+      if (ad < 15) return 'Continue straight';
+      if (ad < 45) return delta>0 ? 'Bear right' : 'Bear left';
+      if (ad < 135) return delta>0 ? 'Turn right'  : 'Turn left';
+      return 'Make a U-turn';
+    }
+    function fmtMeters(m){ return m>=1000 ? (m/1000).toFixed(2)+' km' : Math.round(m)+' m'; }
+    function walkingMinutes(m){ return Math.max(1, Math.round(m / (1.3*60))); }
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    function mkIcon(color) {
+      return new L.Icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-' + color + '.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+        iconSize: [25,41],
+        iconAnchor: [12,41],
+        popupAnchor: [1,-34],
+        shadowSize: [41,41]
+      });
+    }
+
+    const API_BASE = 'http://localhost:5000';
+
+    // Markers
+    const locations = [
+      { id:"main_building", name:"Main Building", coords:[12.926739,77.526795], desc:"Academic Block & Administration", icon: mkIcon('red') },
+      { id:"library", name:"Library", coords:[12.927621738787503,77.52712581978295], desc:"Library with study area", icon: mkIcon('blue') },
+      { id:"canteen", name:"Canteen", coords:[12.925434082158953,77.52629165299633], desc:"Canteen & Food Court", icon: mkIcon('orange') },
+      { id:"admin", name:"Admin Block", coords:[12.927096255900626,77.5266644681782], desc:"Principal Office & Admin Department", icon: mkIcon('violet') },
+      { id:"physical_ed", name:"Physical Education Dept", coords:[12.925816084951286,77.5256072025667], desc:"Playground & Sports Facilities", icon: mkIcon('green') },
+      { id:"main_entrance", name:"Main Entrance", coords:[12.925149,77.526612], desc:"Global Main Entrance", icon: mkIcon('blue') },
+      { id:"parking", name:"Parking Lot", coords:[12.924498319274573,77.52620597909112], desc:"Parking Area", icon: mkIcon('green') },
+      { id:"cricket_ground", name:"Cricket Ground", coords:[12.926341570762668,77.52573912178504], desc:"Cricket Ground", icon: mkIcon('orange') },
+      { id:"basketball_court", name:"Basketball Court", coords:[12.925785239471097,77.52648074851497], desc:"basket ball court", icon: mkIcon('orange') },
+      { id:"volleyball_court", name:"Volleyball Court", coords:[12.925760404156964,77.52627287731568], desc:"volley ball court", icon: mkIcon('violet') },
+      { id:"auditorium", name:"auditorium", coords:[12.927594289430477,77.52711911426056], desc:"auditorium", icon: mkIcon('violet') },
+      { id:"aib_block", name:"AIB BLOCK", coords:[12.926815249290375,77.52708826885693], desc:"AIB block", icon: mkIcon('violet')},
+      { id:"a_block", name:"A block", coords:[12.92746488528009,77.5273605130726], desc:"A block", icon: mkIcon('green')},
+      { id:"b_block", name:"B block", coords:[12.927535469370188,77.52715398297758], desc:"B block", icon: mkIcon('red') },
+      { id:"c_block", name:"C block", coords:[12.92790538196081,77.52719958053099], desc:"C block", icon: mkIcon('violet') },
+      { id:"quadrangle", name:"Quadrangle", coords:[12.926877990871688,77.52653036938116], desc:"Quadrangle", icon: mkIcon('violet')},
+
+    ];
+
+    const markerMap = {};
+    locations.forEach(p => {
+      const m = L.marker(p.coords, { icon: p.icon })
+        .addTo(map)
+        .bindPopup("<b>" + p.name + "</b><br>" + p.desc);
+      markerMap[p.id] = { marker: m, coords: p.coords, name: p.name };
+    });
+    const bounds = L.latLngBounds(locations.map(l => l.coords));
+    map.fitBounds(bounds.pad(0.2));
+
+    // Populate selects
+    const startSelect = document.getElementById('startSelect');
+    const endSelect = document.getElementById('endSelect');
+    function addOption(selectEl, value, text) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.text = text;
+      selectEl.appendChild(opt);
+    }
+    addOption(startSelect, "", "-- select start --");
+    addOption(endSelect, "", "-- select destination --");
+    locations.forEach(l => {
+      addOption(startSelect, l.id, l.name);
+      addOption(endSelect, l.id, l.name);
+    });
+
+    // Get Current Location
+    document.getElementById('get-location').addEventListener('click', () => {
+      if (!navigator.geolocation) { alert('Geolocation is not supported by your browser.'); return; }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const acc = pos.coords.accuracy;
+
+          currentLocation = [lat, lng];
+          if (currentLocMarker) map.removeLayer(currentLocMarker);
+          if (currentAccCircle) map.removeLayer(currentAccCircle);
+
+          currentAccCircle = L.circle([lat, lng], { radius: acc || 15, weight: 1, opacity: 0.6, fillOpacity: 0.08 }).addTo(map);
+          currentLocMarker = L.circleMarker([lat, lng], { radius: 7, weight: 3, color: '#0ea5e9' })
+            .addTo(map)
+            .bindPopup('Your location')
+            .openPopup();
+
+          map.setView([lat, lng], Math.max(map.getZoom(), 18));
+          startSelect.value = "";
+          alert('Current location set as Start. Choose a Destination and click "Show Route".');
+        },
+        (err) => { console.error(err); alert('Unable to retrieve your location. Please allow location permission.'); },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    });
+
+    // VOICE: simple TTS wrapper
+    function speak(text){
+      if (!ttsEnabled) return;
+      try {
+        window.speechSynthesis.cancel();
+        const ut = new SpeechSynthesisUtterance(text);
+        ut.rate = 1.0; ut.pitch = 1.0; ut.lang = 'en-US';
+        window.speechSynthesis.speak(ut);
+      } catch(e){ console.warn('TTS error:', e); }
+    }
+
+    document.getElementById('voiceToggle').addEventListener('click', () => {
+      ttsEnabled = !ttsEnabled;
+      document.getElementById('voiceToggle').textContent = ttsEnabled ? 'Voice: On' : 'Voice: Off';
+      if (ttsEnabled) speak('Voice guidance enabled.');
+    });
+
+    document.getElementById('navToggle').addEventListener('click', () => {
+      if (navState.active) { stopNavigation(); } else { startNavigation(); }
+    });
+
+    function startNavigation(){
+      if (!currentLocation) { alert('Click "Get Current Location" first to enable live navigation.'); return; }
+      if (!navState.anchors.length) { alert('Create a route first, then start navigation.'); return; }
+      if (!navigator.geolocation) { alert('Geolocation not supported.'); return; }
+      navState.active = true;
+      navState.idx = 0;
+      navState.announced = navState.anchors.map(()=>false);
+      document.getElementById('navToggle').textContent = 'Stop Navigation';
+
+      navWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const here = [pos.coords.latitude, pos.coords.longitude];
+          currentLocation = here;
+          if (currentLocMarker) currentLocMarker.setLatLng(here);
+          if (currentAccCircle) currentAccCircle.setLatLng(here);
+
+          if (navState.idx < navState.anchors.length) {
+            const target = navState.anchors[navState.idx];
+            const d = haversine(here, target);
+
+            if (d <= NAV_PREANNOUNCE_M + 5 && d >= NAV_PREANNOUNCE_M - 5 && !navState.announced[navState.idx]) {
+              const plain = navState.instructions[navState.idx].replace('·', '').replace(/\s+\d+\s*(m|km)\s*$/i, '').trim();
+              speak(`In ${NAV_PREANNOUNCE_M} meters, ${plain}.`);
+              navState.announced[navState.idx] = true;
+            }
+
+            if (d <= NAV_NOW_TURN_M) {
+              const plain = navState.instructions[navState.idx].replace('·', '').replace(/\s+\d+\s*(m|km)\s*$/i, '').trim();
+              speak(`${plain}, now.`);
+              navState.idx += 1;
+            }
+          } else {
+            speak('You have arrived.');
+            stopNavigation();
+          }
+        },
+        (err) => { console.warn('watchPosition error:', err); },
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
+      );
+    }
+
+    function stopNavigation(){
+      if (navWatchId !== null) { navigator.geolocation.clearWatch(navWatchId); navWatchId = null; }
+      navState.active = false;
+      document.getElementById('navToggle').textContent = 'Start Navigation';
+    }
+
+    // Brief directions from polyline
+    function normalizeDelta(delta){
+      if (delta > 180) delta -= 360;
+      if (delta < -180) delta += 360;
+      return delta;
+    }
+
+    function buildBriefDirections(latlngs, startName, endName){
+      const steps = [];
+      const anchors = [];
+      if (!latlngs || latlngs.length < 2) {
+        steps.push(`Start at ${startName}`);
+        steps.push(`Arrive at ${endName}`);
+        anchors.push(latlngs?.[0] || null, latlngs?.[latlngs.length-1] || null);
+        return { steps, anchors };
+      }
+      const MIN_TURN_DEG = 30;
+      const MIN_SEG_M = 8;
+      steps.push(`Start at ${startName}`);
+      anchors.push(latlngs[0]);
+      let prevBr = bearing(latlngs[0], latlngs[1]);
+      let accum = 0;
+      for (let i = 1; i < latlngs.length - 1; i++) {
+        const segLen = haversine(latlngs[i], latlngs[i+1]);
+        accum += segLen;
+        const br = bearing(latlngs[i], latlngs[i+1]);
+        const delta = normalizeDelta(br - prevBr);
+        if (Math.abs(delta) >= MIN_TURN_DEG) {
+          const turn = turnFromDelta(delta).replace(/^Make a /i, '').replace(/^Continue straight$/i, 'continue straight');
+          steps.push(`In ${fmtMeters(accum)}, ${turn.toLowerCase()}`);
+          anchors.push(latlngs[i]);
+          accum = 0;
+          prevBr = br;
+        }
+      }
+      if (accum >= MIN_SEG_M) { steps.push(`Continue for ${fmtMeters(accum)}`); }
+      steps.push(`Arrive at ${endName}`);
+      anchors.push(latlngs[latlngs.length - 1]);
+      return { steps, anchors };
+    }
+
+    // Show Route (uses GPS start if available, else dropdown Start)
+   // Show Route (uses GPS start if available, else dropdown Start)
+document.getElementById('showRouteBtn').addEventListener('click', async function () {
+  ensureDirPanel();
+  clearRoute();
+
+  const startId = startSelect.value;
+  const endId   = endSelect.value;
+
+  if (!currentLocation && !startId) { alert("Pick a Start from the list OR click 'Get Current Location'."); return; }
+  if (!endId) { alert("Please choose a Destination."); return; }
+  if (!currentLocation && startId === endId) { alert("Start and Destination are the same."); return; }
+
+  let start, startName;
+  if (currentLocation) {
+    start = currentLocation;
+    startName = 'Your location';
+  } else {
+    start = markerMap[startId].coords;
+    startName = markerMap[startId]?.name || 'Start';
+  }
+  const end = markerMap[endId].coords;
+
+  try {
+    const direct = document.getElementById('directEdgeMode')?.checked === true;
+
+    let res, data, latlngs;
+
+    if (direct) {
+      // We want the EXACT saved path between two DB nodes.
+      // Require node codes for both ends so backend knows which edge.
+      if (!startId) {
+        alert("When 'Use direct saved path' is ON and you're using GPS, you must still choose a Start node from the list so we know which saved edge to fetch.");
+        return;
+      }
+      const fromCode = startId;
+      const toCode   = endId;
+
+      const url = `${API_BASE}/api/route/edge?from=${encodeURIComponent(fromCode)}&to=${encodeURIComponent(toCode)}`;
+      res = await fetch(url);
+      data = await res.json();
+      if (!res.ok) { alert(data.error || "Direct-edge routing failed."); return; }
+
+      // exact saved shape
+      latlngs = data.path.map(p => [p.lat, p.lng]);
+
+      // If GPS is used, gently snap the first point to your current location,
+      // so the drawn line starts from you and immediately follows the saved path.
+      if (currentLocation && latlngs && latlngs.length > 0) {
+        const dToFirst = haversine(currentLocation, latlngs[0]);
+
+        // If you're close to the start of the saved line, replace that first point with GPS,
+        // otherwise just prepend your GPS as the very first vertex so polyline starts from you.
+        if (dToFirst <= 60) {
+          latlngs[0] = currentLocation.slice();
+        } else {
+          latlngs.unshift(currentLocation.slice());
+        }
+      }
+
+    } else {
+      // Default graph-based walking route (works with GPS start or dropdown start)
+      const STEP = 10;
+      const url = `${API_BASE}/api/route/walk-ll?startLat=${start[0]}&startLng=${start[1]}&endLat=${end[0]}&endLng=${end[1]}&step=${STEP}`;
+      res = await fetch(url);
+      data = await res.json();
+      if (!res.ok) { alert(data.error || "Routing failed."); return; }
+      latlngs = data.path.map(p => [p.lat, p.lng]);
+    }
+
+    // draw polyline
+    walkLayer = L.polyline(latlngs, { color:'#2563eb', weight:5, opacity:0.95, dashArray:'6 8' }).addTo(map);
+    map.fitBounds(walkLayer.getBounds().pad(0.2));
+
+    const s = latlngs[0], t = latlngs[latlngs.length-1];
+    endpointLayers.push(L.circleMarker(s, { radius:6, color:'#dc2626', weight:3 }).addTo(map).bindPopup('Start'));
+    endpointLayers.push(L.circleMarker(t, { radius:6, color:'#16a34a', weight:3 }).addTo(map).bindPopup('Destination'));
+
+    const distance = data?.summary?.distanceMeters ??
+      latlngs.slice(1).reduce((acc,pt,i)=>acc+haversine(latlngs[i], pt), 0);
+    const minutes  = data?.summary?.durationMin ?? walkingMinutes(distance);
+
+    document.getElementById('distanceBadge').textContent = fmtMeters(distance);
+    document.getElementById('timeBadge').textContent     = `${minutes} min walk`;
+    document.getElementById('stepsBadge').textContent    = `${latlngs.length-1} points`;
+
+    // Build brief instructions + anchor points from the actual path shape
+    const stepsEl = document.getElementById('stepsList');
+    const destName = markerMap[endId]?.name || 'Destination';
+    const { steps, anchors } = buildBriefDirections(latlngs, startName, destName);
+
+    // Render list
+    stepsEl.innerHTML = '';
+    steps.forEach(t => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      stepsEl.appendChild(li);
+    });
+
+    // Seed voice nav state
+    navState.instructions = steps;
+    navState.anchors = anchors;
+    navState.announced = anchors.map(() => false);
+    navState.idx = 0;
+
+    if (ttsEnabled) {
+      // give a quick spoken summary right away
+      speak(`Route ready. ${minutes} minute walk, ${Math.round(distance)} meters.`);
+    }
+
+  } catch (e) {
+    console.error(e);
+    alert("Could not reach routing API.");
+  }
+});
+ // <-- properly closes the click handler
+
+    // Indoor demo (separate from the click handler)
+    const indoorRoutes = {
+      roomToRoom: [
+        [12.9270, 77.52660],
+        [12.92705, 77.52662],
+        [12.92707, 77.52670],
+        [12.92715, 77.52675],
+        [12.92725, 77.52678],
+      ]
+    };
+    document.getElementById('indoorSelect').addEventListener('change', function(e){
+      const key = e.target.value;
+      clearRoute();
+      if (!key) return;
+      const pts = indoorRoutes[key];
+      if (!pts) { alert("No indoor path data for this selection."); return; }
+      const poly = L.polyline(pts, { color: 'green', weight: 5, opacity: 0.9 }).addTo(map);
+      poly.bindPopup("Indoor route").openPopup();
+      window._indoorPolyline = poly;
+      map.fitBounds(poly.getBounds().pad(0.2));
+    });
+
+    // Dev helper
+    map.on('click', function(e){
+      console.log("LatLng:", e.latlng.lat, e.latlng.lng);
+    });
+  </script>
+</body>
+</html>

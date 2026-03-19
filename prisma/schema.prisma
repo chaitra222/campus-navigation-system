@@ -1,0 +1,43 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum EdgeType {
+  road
+  corridor
+  stairs
+  ramp
+  lift
+  footpath
+}
+
+model Node {
+  id        Int     @id @default(autoincrement())
+  code      String  @unique
+  name      String
+  lat       Float
+  lng       Float
+  type      String?
+  // back-relations
+  edgesFrom Edge[]  @relation("EdgesFrom")
+  edgesTo   Edge[]  @relation("EdgesTo")
+}
+
+model Edge {
+  id           Int     @id @default(autoincrement())
+  fromId       Int
+  toId         Int
+  from         Node    @relation("EdgesFrom", fields: [fromId], references: [id])
+  to           Node    @relation("EdgesTo", fields: [toId], references: [id])
+  type         String
+  bidirectional Boolean @default(true)
+  accessible    Boolean @default(true)
+  lengthMeters  Float
+  pathCoords    Json
+}

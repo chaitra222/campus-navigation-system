@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Navigation | Campus Navigation System</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="page-bg">
+  <header class="nav-header">
+    <img src="college-logo.png" class="logo" alt="Logo" />
+  </header>
+
+  <div class="glass-card fade-in">
+    <h2>Find Your Route</h2>
+
+    <div class="input-group">
+      <label for="start">Starting Point:</label>
+      <input type="text" id="start" placeholder="Enter starting point">
+    </div>
+
+    <div class="input-group">
+      <label for="end">Destination:</label>
+      <input type="text" id="end" placeholder="Enter destination">
+    </div>
+
+    <div class="input-group">
+      <label for="language">Select Language:</label>
+      <select id="language">
+        <option value="en">English</option>
+        <option value="kn">Kannada</option>
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="ta">Tamil</option>
+      </select>
+    </div>
+
+    <div class="actions">
+      <button id="voiceBtn">🎤 Speak</button>
+      <button id="findRouteBtn">Find Route</button>
+    </div>
+  </div>
+
+ 
+  <!-- near the end of <body>, before your app script -->
+<script src="js/api.js"></script>
+<script src="js/app.js"></script> <!-- your code that uses CN_API -->
+
+<script src="script.js"></script> <!-- your existing main JS -->
+
+</body>
+</html>

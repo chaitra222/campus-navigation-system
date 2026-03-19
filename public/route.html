@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Route | Campus Navigation System</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+</head>
+<body class="route-body">
+  <div class="route-container fade-in">
+    <h2>Live Route Tracking</h2>
+
+    <div id="map"></div>
+
+    <div class="route-info">
+      <p><strong>Distance:</strong> <span id="distance"></span></p>
+      <p><strong>Estimated Time:</strong> <span id="time"></span></p>
+    </div>
+
+    <div class="route-buttons">
+      <button id="speakRoute">🔊 Voice Guide</button>
+      <button id="backBtn">⬅ Back</button>
+    </div>
+  </div>
+  <script src="js/config.js"></script>
+<script src="js/auth.js"></script>
+
+<script>
+async function getRoute() {
+  const startId = 1; // change as needed
+  const endId = 5;
+  try {
+    const data = await authFetch(`${window.API_BASE}/api/route`, {
+      method: "POST",
+      body: JSON.stringify({ start: { id: startId }, end: { id: endId } })
+    });
+    console.log(data);
+    alert(`Route distance: ${data.distanceMeters} m`);
+  } catch (e) {
+    alert("Error: " + e.message);
+  }
+}
+</script>
+
+<button onclick="getRoute()">Get Route</button>
+
+
+  
+<!-- near the end of <body>, before your app script -->
+<script src="js/api.js"></script>
+<script src="js/app.js"></script> <!-- your code that uses CN_API -->
+
+<script src="script.js"></script> <!-- your existing main JS -->
+
+</body>
+</html>
